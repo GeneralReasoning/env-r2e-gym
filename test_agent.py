@@ -1,9 +1,10 @@
-import json
 import asyncio
+import json
 import os
 
 from openai import AsyncOpenAI
 from openreward import OpenReward
+
 
 async def main():
     or_client = OpenReward()

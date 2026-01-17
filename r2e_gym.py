@@ -1,16 +1,17 @@
 import json
 import os
-from shlex import quote
 import traceback
 from pathlib import Path
+from shlex import quote
 from typing import Any, Iterable, List, cast
 
 from datasets import Dataset, load_dataset
+from openreward import AsyncOpenReward, SandboxSettings
+from openreward.environments import (Environment, JSONObject, TextBlock,
+                                     ToolOutput, tool)
 from pydantic import BaseModel
 
-from openreward import AsyncOpenReward, SandboxSettings
-from openreward.environments import Environment, JSONObject, ToolOutput, tool, TextBlock
-from utils import parse_log, decolor_dict_keys, decode_patch_bytes
+from utils import decode_patch_bytes, decolor_dict_keys, parse_log
 
 FULL_DATASET = cast(Dataset, load_dataset("R2E-Gym/R2E-Gym-V1", split="train"))
 SUBSET_DATASET = cast(Dataset, load_dataset("R2E-Gym/R2E-Gym-Subset", split="train"))
