@@ -4,19 +4,24 @@ from typing import cast
 import pytest
 import pandas as pd
 
-from environments.r2e_gym.server import R2EGym, BashParams
-from matrix.server import JSONObject, ToolOutput
+from r2e_gym import R2EGym, BashParams
+from openreward.environments import JSONObject, ToolOutput
 
-tasks = R2EGym.get_tasks("all")
+import os
+
+OPENREWARD_API_KEY = os.getenv("OPENREWARD_API_KEY", "")
+
+tasks = R2EGym.list_tasks("all")
 EXAMPLE_R2E_TASK = tasks[0]
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(not OPENREWARD_API_KEY, reason="OPENREWARD_API_KEY is not set")
 async def test_r2e_bash():
-    env = R2EGym(task_spec=EXAMPLE_R2E_TASK)
+    env = R2EGym(task_spec=EXAMPLE_R2E_TASK, secrets={"OPENREWARD_API_KEY": OPENREWARD_API_KEY})
     try:
         await env.setup()
         output: ToolOutput = await env.bash(BashParams(command="whoami"))
-        output_value = output.data["output"]
+        output_value = output.metadata["output"]
         assert isinstance(output_value, str)
         output_str = cast(str, output_value)
         assert "root" in output_str, f"Expected 'root' in output, got {output_str}"
@@ -27,8 +32,9 @@ GOLD_PATCHES = pd.read_csv(Path(__file__).parent / "gold_patches.csv")
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("task", tasks)
+@pytest.mark.skipif(not OPENREWARD_API_KEY, reason="OPENREWARD_API_KEY is not set")
 async def test_r2e_gold(task: JSONObject):
-    env = R2EGym(task_spec=task)
+    env = R2EGym(task_spec=task, secrets={"OPENREWARD_API_KEY": OPENREWARD_API_KEY})
     try:
         await env.setup()
 
@@ -53,8 +59,9 @@ async def test_r2e_gold(task: JSONObject):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("task", tasks)
+@pytest.mark.skipif(not OPENREWARD_API_KEY, reason="OPENREWARD_API_KEY is not set")
 async def test_r2e_xfail_state(task: JSONObject):
-    env = R2EGym(task_spec=task)
+    env = R2EGym(task_spec=task, secrets={"OPENREWARD_API_KEY": OPENREWARD_API_KEY})
     try:
         await env.setup()
 
