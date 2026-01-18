@@ -8,7 +8,7 @@ from typing import Any, Iterable, List, cast
 from datasets import Dataset, load_dataset
 from openreward import AsyncOpenReward, SandboxSettings
 from openreward.environments import (Environment, JSONObject, TextBlock,
-                                     ToolOutput, tool)
+                                     ToolOutput, tool, Split)
 from pydantic import BaseModel
 
 from utils import decode_patch_bytes, decolor_dict_keys, parse_log
@@ -167,9 +167,6 @@ class R2EGym(Environment):
 
     @classmethod
     def list_tasks(cls, split: str) -> list[JSONObject]:
-        if split not in cls.list_splits():
-            raise ValueError(f"Unknown split: {split}")
-
         if split == "all":
             df = FULL_DATASET
         elif split == "subset":
@@ -187,5 +184,8 @@ class R2EGym(Environment):
         return [v.model_dump() for v in validated_spec]
 
     @classmethod
-    def list_splits(cls) -> list[str]:
-        return ["all", "subset"]
+    def list_splits(cls) -> list[Split]:
+        return [
+            Split(name="all", type="train"),
+            Split(name="subset", type="train"),
+        ]
