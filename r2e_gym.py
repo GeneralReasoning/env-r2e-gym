@@ -36,10 +36,11 @@ class R2EGym(Environment):
         super().__init__(task_spec)
         self.validated = ValidatedSpec.model_validate(task_spec)
 
-        if not secrets.get("OPENREWARD_API_KEY", ""):
-            raise ValueError("OPENREWARD_API_KEY is not set")
+        api_key = secrets.get("OPENREWARD_API_KEY") or secrets.get("API_KEY")
+        if not api_key:
+            raise ValueError("OPENREWARD_API_KEY or API_KEY is not set")
 
-        self.or_client = AsyncOpenReward(api_key=secrets.get("OPENREWARD_API_KEY", ""))
+        self.or_client = AsyncOpenReward(api_key=api_key)
         self.compute_settings = SandboxSettings(
             environment="GeneralReasoning/R2E-Gym",
             image=self.validated.docker_image,
