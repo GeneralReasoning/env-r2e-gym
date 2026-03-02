@@ -1,7 +1,6 @@
 # R2E-Gym
 
-[![⭐ OpenReward Environment](https://img.shields.io/badge/%E2%AD%90%20OpenReward-Environment-f7e6cc)](https://openreward.ai/GeneralReasoning/R2E-Gym)
-[![Hugging Face Dataset](https://img.shields.io/badge/Hugging%20Face-Dataset-orange)](https://huggingface.co/datasets/R2E-Gym/R2E-Gym-V1)
+[![⭐ OpenReward Environment](https://img.shields.io/badge/%E2%AD%90%20OpenReward-Environment-f7e6cc)](https://openreward.ai/GeneralReasoning/R2E-Gym) [![Hugging Face Dataset](https://img.shields.io/badge/Hugging%20Face-Dataset-orange)](https://huggingface.co/datasets/R2E-Gym/R2E-Gym-V1)
 
 ## Description
 
@@ -21,7 +20,7 @@ Each task runs in an isolated Docker sandbox provisioned with 4 CPUs and 8GB of 
 
 ## License
 
-[ORLv1](https://openreward.ai/orlv1.md).
+[Apache 2.0](https://www.apache.org/licenses/LICENSE-2.0).
 
 ## Tasks
 
@@ -62,17 +61,31 @@ R2E-Gym is a multi-turn environment. The agent receives a problem statement desc
 
 ## Environment Difficulty
 
-R2E-Gym tasks involve complex real-world repository modifications. The original R2E-Gym paper reports that agents trained on R2E-Gym achieve 51% on SWE-Bench Verified, representing the state of the art for open-weight software engineering agents.
+The original paper evaluates models on SWE-Bench Verified:
+
+| Model | Score |
+|-------|-------|
+| Claude-3.7-Sonnet (Best@Any) | 70.3% |
+| Claude-3.7-Sonnet (Agent) | 62.3% |
+| Claude-3.6-Sonnet (OpenHands) | 53.0% |
+| R2E-Gym-32B (Best@26 w/ Hybrid) | 51.0% |
+| Claude-3.6-Sonnet (Agentless-1.5) | 50.8% |
+| DeepSeek-R1 (Agentless) | 49.2% |
+| O1 (Agentless) | 48.0% |
+| R2E-Gym-32B (Pass@1) | 34.4% |
+| GPT-4o (Agentless-1.5) | 34.0% |
+
+R2E-Gym-32B achieves 51% on SWE-Bench Verified, representing the state of the art for open-weight software engineering agents.
 
 ## Other Environment Requirements
 
-There are no external API keys required beyond OpenReward platform access. The environment uses the OpenReward sandbox API to provision per-task Docker containers.
+No external API keys required.
 
 ## Safety
 
 Agents operate in isolated Docker sandboxes with no access to the host system or external network beyond what is required for the task. Each sandbox is provisioned per-task and destroyed after the episode completes. The agent's actions are confined to the `/testbed` directory containing the target repository.
 
-## Citations
+## Citation
 
 ```bibtex
 @article{jain2025r2egym,
