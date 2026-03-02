@@ -61,21 +61,7 @@ R2E-Gym is a multi-turn environment. The agent receives a problem statement desc
 
 ## Environment Difficulty
 
-The original paper evaluates models on SWE-Bench Verified:
-
-| Model | Score |
-|-------|-------|
-| Claude-3.7-Sonnet (Best@Any) | 70.3% |
-| Claude-3.7-Sonnet (Agent) | 62.3% |
-| Claude-3.6-Sonnet (OpenHands) | 53.0% |
-| R2E-Gym-32B (Best@26 w/ Hybrid) | 51.0% |
-| Claude-3.6-Sonnet (Agentless-1.5) | 50.8% |
-| DeepSeek-R1 (Agentless) | 49.2% |
-| O1 (Agentless) | 48.0% |
-| R2E-Gym-32B (Pass@1) | 34.4% |
-| GPT-4o (Agentless-1.5) | 34.0% |
-
-R2E-Gym-32B achieves 51% on SWE-Bench Verified, representing the state of the art for open-weight software engineering agents.
+[Put environment difficulty here]
 
 ## Other Environment Requirements
 
