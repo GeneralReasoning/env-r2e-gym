@@ -4,7 +4,7 @@
 
 ## Description
 
-R2E-Gym is a real-world software engineering agent training environment built on 8,100+ executable coding problem environments with procedurally generated and hybrid-verified test suites. Each task presents the agent with a real GitHub repository containing a bug or missing feature, and the agent must explore the codebase, diagnose the issue, and produce a working patch. Tasks are drawn from real open-source repositories and cover bug fixes, feature implementations, and other software maintenance activities.
+R2E-Gym is a real-world software engineering ORS training environment built on 8,100+ executable coding problem environments with procedurally generated and hybrid-verified test suites. Each task presents the agent with a real GitHub repository containing a bug or missing feature, and the agent must explore the codebase, diagnose the issue, and produce a working patch. Tasks are drawn from real open-source repositories and cover bug fixes, feature implementations, and other software maintenance activities.
 
 ## Capabilities
 
