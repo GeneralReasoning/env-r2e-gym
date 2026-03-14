@@ -36,7 +36,7 @@ class R2EGym(Environment):
         super().__init__(task_spec)
         self.validated = ValidatedSpec.model_validate(task_spec)
 
-        self.or_client = AsyncOpenReward(api_key=api_key)
+        self.or_client = AsyncOpenReward(api_key=secrets.get("api_key"))
         self.compute_settings = SandboxSettings(
             environment="GeneralReasoning/R2E-Gym",
             image=self.validated.docker_image,
