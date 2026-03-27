@@ -41,7 +41,7 @@ class R2EGym(Environment):
             environment="Naman/R2E-Gym",
             image=self.validated.docker_image,
             machine_size="4:8"
-        )
+        ) # changed to Naman
         self.computer = self.or_client.sandbox(self.compute_settings)
 
         self._hidden_dir = Path("/var/lib/.r2e_gym")
