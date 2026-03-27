@@ -38,7 +38,7 @@ class R2EGym(Environment):
 
         self.or_client = AsyncOpenReward(api_key=secrets.get("api_key"))
         self.compute_settings = SandboxSettings(
-            environment="GeneralReasoning/R2E-Gym",
+            environment="Naman/R2E-Gym",
             image=self.validated.docker_image,
             machine_size="4:8"
         )
