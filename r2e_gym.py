@@ -42,32 +42,32 @@ class R2EGym(Environment):
             image=self.validated.docker_image,
             machine_size="4:8"
         ) # changed to Naman
-        self.computer = self.or_client.sandbox(self.compute_settings)
+        self.sandbox = self.or_client.sandbox(self.compute_settings)
 
         self._hidden_dir = Path("/var/lib/.r2e_gym")
         self._hidden_tests_tar = self._hidden_dir / f".r2e_tests.{self.validated.commit_hash}.tar"
         self._hidden_run_tests = self._hidden_dir / f".run_tests.{self.validated.commit_hash}.sh"
 
     async def setup(self) -> None:
-        await self.computer.start()
-        await self.computer.check_run("git config --global --add safe.directory /testbed")
+        await self.sandbox.start()
+        await self.sandbox.check_run("git config --global --add safe.directory /testbed")
 
         # delete .pyc, __pycache__
-        await self.computer.check_run("find /testbed -name '*.pyc' -delete")
-        await self.computer.check_run("find /testbed -name '__pycache__' -delete")
-        await self.computer.check_run("find /r2e_tests -name '*.pyc' -delete")
-        await self.computer.check_run("find /r2e_tests -name '__pycache__' -delete")
+        await self.sandbox.check_run("find /testbed -name '*.pyc' -delete")
+        await self.sandbox.check_run("find /testbed -name '__pycache__' -delete")
+        await self.sandbox.check_run("find /r2e_tests -name '*.pyc' -delete")
+        await self.sandbox.check_run("find /r2e_tests -name '__pycache__' -delete")
 
         # symlinks, so we can run tests from /root
-        await self.computer.check_run("ln -s /testbed/.venv/bin/python /root/.local/bin/python")
-        await self.computer.check_run("ln -s /testbed/.venv/bin/python /root/.local/bin/python3")
-        await self.computer.check_run("ln -s /testbed/.venv/ /root/.venv")
-        await self.computer.check_run("ln -s /root/r2e_tests /testbed/r2e_tests")
+        await self.sandbox.check_run("ln -s /testbed/.venv/bin/python /root/.local/bin/python")
+        await self.sandbox.check_run("ln -s /testbed/.venv/bin/python /root/.local/bin/python3")
+        await self.sandbox.check_run("ln -s /testbed/.venv/ /root/.venv")
+        await self.sandbox.check_run("ln -s /root/r2e_tests /testbed/r2e_tests")
 
         hidden_dir_q = quote(str(self._hidden_dir))
         hidden_tests_tar_q = quote(str(self._hidden_tests_tar))
         hidden_run_tests_q = quote(str(self._hidden_run_tests))
-        await self.computer.check_run(
+        await self.sandbox.check_run(
             " && ".join(
                 [
                     f"mkdir -p {hidden_dir_q}",
@@ -82,7 +82,7 @@ class R2EGym(Environment):
         )
 
     async def teardown(self) -> None:
-        await self.computer.stop()
+        await self.sandbox.stop()
 
     async def get_prompt(self) -> List[TextBlock]:
         return [TextBlock(text=self.validated.problem_statement)]
@@ -92,7 +92,7 @@ class R2EGym(Environment):
         """
         Execute a bash command in the in the /root/.venv environment
         """
-        output, code = await self.computer.run(f"source /root/.venv/bin/activate && {params.command.strip()}", timeout=self.validated.bash_timeout)
+        output, code = await self.sandbox.run(f"source /root/.venv/bin/activate && {params.command.strip()}", timeout=self.validated.bash_timeout)
         return ToolOutput(
             metadata={"output": output, "exit_code": code},
             blocks=[TextBlock(text=f"{output}\n\n(exit {code})")],
@@ -110,8 +110,8 @@ class R2EGym(Environment):
         try:
             # extract patch for logging
             if self.validated.download_model_patch:
-                await self.computer.check_run(f"git add -A && git diff --cached {self.validated.commit_hash} > /testbed/model.patch")
-                patch_bytes = await self.computer.download("/testbed/model.patch")
+                await self.sandbox.check_run(f"git add -A && git diff --cached {self.validated.commit_hash} > /testbed/model.patch")
+                patch_bytes = await self.sandbox.download("/testbed/model.patch")
                 patch = decode_patch_bytes(patch_bytes)
             else:
                 patch = ""
@@ -119,10 +119,10 @@ class R2EGym(Environment):
             # Restore withheld tests for grading only
             hidden_tests_tar_q = quote(str(self._hidden_tests_tar))
             hidden_run_tests_q = quote(str(self._hidden_run_tests))
-            await self.computer.check_run(f"cp {hidden_run_tests_q} /root/run_tests.sh && chmod 700 /root/run_tests.sh")
-            await self.computer.check_run(f"tar -xf {hidden_tests_tar_q} -C /root")
+            await self.sandbox.check_run(f"cp {hidden_run_tests_q} /root/run_tests.sh && chmod 700 /root/run_tests.sh")
+            await self.sandbox.check_run(f"tar -xf {hidden_tests_tar_q} -C /root")
 
-            test_output, _ = await self.computer.run("bash /root/run_tests.sh", timeout=self.validated.test_timeout)
+            test_output, _ = await self.sandbox.run("bash /root/run_tests.sh", timeout=self.validated.test_timeout)
 
             parse_res = parse_log(test_output)
             parse_res = decolor_dict_keys(parse_res)
