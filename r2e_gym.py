@@ -1,6 +1,5 @@
 import json
 import os
-import traceback
 from pathlib import Path
 from shlex import quote
 from typing import Any, Iterable, List, cast
@@ -20,6 +19,13 @@ class BashParams(BaseModel, extra="forbid"):
     command: str
 
 class ValidatedSpec(BaseModel, extra="forbid"):
+    # Stable per-task identifier. Harnesses key their trial logs off
+    # id/index/scenario_id/task_id and fall back to a timestamp when none is
+    # present, which made every trial log indistinguishable ("trial_unknown_*")
+    # and per-task reward attribution impossible. Note this model is
+    # extra="forbid", so the field has to exist here for list_tasks() to be
+    # able to emit it.
+    id: str
     repo_name: str
     docker_image: str
     commit_hash: str
@@ -107,59 +113,87 @@ class R2EGym(Environment):
         This can only be called once, after all steps have been taken; only call this tool after you have finished all your steps and solved the coding issue.
         """
         expected_json = json.loads(self.validated.expected_output_json)
-        try:
-            # extract patch for logging
-            if self.validated.download_model_patch:
-                await self.sandbox.check_run(f"git add -A && git diff --cached {self.validated.commit_hash} > /testbed/model.patch")
-                patch_bytes = await self.sandbox.download("/testbed/model.patch")
-                patch = decode_patch_bytes(patch_bytes)
-            else:
-                patch = ""
+        # Grading failures are deliberately NOT caught. Everything below is a
+        # network round-trip to the sandbox (check_run / download / run), and a
+        # failed round-trip means we could not grade -- not that the patch was
+        # wrong. Letting it propagate lets the platform retry and, if it keeps
+        # failing, mark the trial ungraded. This used to be wrapped in a bare
+        # `except Exception` that returned reward=0.0, finished=True, so a
+        # transient sandbox error was banked as a genuine patch failure.
+        # extract patch for logging
+        if self.validated.download_model_patch:
+            await self.sandbox.check_run(f"git add -A && git diff --cached {self.validated.commit_hash} > /testbed/model.patch")
+            patch_bytes = await self.sandbox.download("/testbed/model.patch")
+            patch = decode_patch_bytes(patch_bytes)
+        else:
+            patch = ""
 
-            # Restore withheld tests for grading only
-            hidden_tests_tar_q = quote(str(self._hidden_tests_tar))
-            hidden_run_tests_q = quote(str(self._hidden_run_tests))
-            await self.sandbox.check_run(f"cp {hidden_run_tests_q} /root/run_tests.sh && chmod 700 /root/run_tests.sh")
-            await self.sandbox.check_run(f"tar -xf {hidden_tests_tar_q} -C /root")
+        # Restore withheld tests for grading only
+        hidden_tests_tar_q = quote(str(self._hidden_tests_tar))
+        hidden_run_tests_q = quote(str(self._hidden_run_tests))
+        await self.sandbox.check_run(f"cp {hidden_run_tests_q} /root/run_tests.sh && chmod 700 /root/run_tests.sh")
+        await self.sandbox.check_run(f"tar -xf {hidden_tests_tar_q} -C /root")
 
-            test_output, _ = await self.sandbox.run("bash /root/run_tests.sh", timeout=self.validated.test_timeout)
+        test_output, _ = await self.sandbox.run("bash /root/run_tests.sh", timeout=self.validated.test_timeout)
 
-            parse_res = parse_log(test_output)
-            parse_res = decolor_dict_keys(parse_res)
-            parse_res = {k.split(" - ")[0]: parse_res[k] for k in sorted(parse_res.keys())}
-
-            expected = decolor_dict_keys(expected_json)
-            expected = {k.split(" - ")[0]: expected[k] for k in sorted(expected.keys())}
-
-            # Compare
-            if len(parse_res) != len(expected):
-                reward = 0.0
-            else:
-                # If ANY mismatch, reward = 0.0, else = 1.0
-                match = True
-                for k in parse_res.keys():
-                    if not k:
-                        continue
-                    if k not in expected:
-                        match = False
-                        break
-                    if parse_res[k] != expected[k]:
-                        match = False
-                        break
-                reward = 1.0 if match else 0.0
-            return ToolOutput(
-                metadata={"parse_res": parse_res, "expected": expected, "patch": patch},
-                blocks=[TextBlock(text=f"Test Results:\n{json.dumps(parse_res, indent=2)}\n\nExpected:\n{json.dumps(expected, indent=2)}\n\nReward: {reward}")],
-                reward=reward,
-                finished=True,
+        # No output at all means the suite never ran (sandbox died, script
+        # missing, timeout before first write) rather than "every test failed".
+        # Raise so the platform can retry instead of banking a 0.0.
+        if not test_output or not test_output.strip():
+            raise RuntimeError(
+                "Withheld test suite produced no output; cannot grade this "
+                "rollout. Treating as ungraded rather than scoring it 0.0."
             )
-        except Exception:
-            return ToolOutput(
-                metadata={"error": traceback.format_exc()},
-                blocks=[TextBlock(text=f"Error during evaluation:\n{traceback.format_exc()}")],
-                reward=0.0,
-                finished=True,
-            )
+
+        parse_res = parse_log(test_output)
+        parse_res = decolor_dict_keys(parse_res)
+        parse_res = {k.split(" - ")[0]: parse_res[k] for k in sorted(parse_res.keys())}
+
+        expected = decolor_dict_keys(expected_json)
+        expected = {k.split(" - ")[0]: expected[k] for k in sorted(expected.keys())}
+
+        # A run that collected zero tests is not the same thing as a run where
+        # every test failed, but both used to land on an indistinguishable 0.0.
+        # We still score it 0.0 -- a patch that breaks collection outright is a
+        # real failure, and making it ungraded would let an agent dodge the
+        # penalty by breaking the suite -- but flag it so it is separable in
+        # analysis.
+        no_tests_collected = not parse_res and bool(expected)
+
+        # Compare
+        if len(parse_res) != len(expected):
+            reward = 0.0
+        else:
+            # If ANY mismatch, reward = 0.0, else = 1.0
+            match = True
+            for k in parse_res.keys():
+                if not k:
+                    continue
+                if k not in expected:
+                    match = False
+                    break
+                if parse_res[k] != expected[k]:
+                    match = False
+                    break
+            reward = 1.0 if match else 0.0
+
+        note = (
+            "\n\nNOTE: the withheld suite collected 0 tests. Scored 0.0, but "
+            "this is a collection failure rather than a per-test comparison."
+            if no_tests_collected
+            else ""
+        )
+        return ToolOutput(
+            metadata={
+                "parse_res": parse_res,
+                "expected": expected,
+                "patch": patch,
+                "no_tests_collected": no_tests_collected,
+            },
+            blocks=[TextBlock(text=f"Test Results:\n{json.dumps(parse_res, indent=2)}\n\nExpected:\n{json.dumps(expected, indent=2)}\n\nReward: {reward}{note}")],
+            reward=reward,
+            finished=True,
+        )
 
     @classmethod
     def list_tasks(cls, split: str) -> list[JSONObject]:
@@ -169,6 +203,7 @@ class R2EGym(Environment):
             df = SUBSET_DATASET
         validated_spec = [
             ValidatedSpec(
+                id=f"{r['repo_name']}-{r['commit_hash'][:12]}",
                 repo_name=r["repo_name"],
                 docker_image=r["docker_image"],
                 commit_hash=r["commit_hash"],
