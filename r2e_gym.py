@@ -1,6 +1,5 @@
 import json
 import os
-import re
 import tempfile
 from pathlib import Path
 from shlex import quote
@@ -23,6 +22,30 @@ class SandboxUnavailableError(RuntimeError):
 
 
 _DEAD_SANDBOX_MARKERS = ("no such container", "is not running")
+
+_PYTEST_CONFIG_FILES = (
+    "pytest.ini",
+    "setup.cfg",
+    "tox.ini",
+    "pyproject.toml",
+    "conftest.py",
+)
+
+
+def _patched_config_files(patch: str) -> list[str]:
+    """Root-level pytest config files the submitted diff touches, if any.
+
+    Anything untracked at setup() is in .git/info/exclude, so a config path can
+    only reach here by being tracked or newly added by the diff itself.
+    """
+    names = set()
+    for line in patch.splitlines():
+        for prefix in ("--- a/", "+++ b/"):
+            if line.startswith(prefix):
+                path = line[len(prefix):].split("\t")[0].strip()
+                if path in _PYTEST_CONFIG_FILES:
+                    names.add(path)
+    return sorted(names)
 
 
 def _dead_sandbox_error(output: str) -> str | None:
@@ -170,11 +193,23 @@ class R2EGym(Environment):
                 finished=True,
             )
 
-        script = await self._grading_sandbox.check_run("cat /testbed/run_tests.sh")
-        hardened = re.sub(r"(?<![\w/.])\.venv/", "/testbed/.venv/", script.strip())
-        hardened = re.sub(r"(?<![\w/])r2e_tests(?![\w/])", "/r2e_tests", hardened)
+        # run_tests.sh must run from the repo root with the withheld tests
+        # reachable at the relative path it names, or pytest resolves a
+        # different rootdir and silently drops the repo's own config.
+        await self._grading_sandbox.check_run(
+            "rm -rf /testbed/r2e_tests && ln -s /r2e_tests /testbed/r2e_tests"
+        )
+        # Grade under the config the expected output was recorded with: a diff
+        # that edits it would rewrite the withheld suite's own selection.
+        config = _patched_config_files(patch)
+        if config:
+            await self._grading_sandbox.check_run(
+                "cd /testbed && for f in " + " ".join(quote(c) for c in config) + "; do "
+                'git ls-files --error-unmatch "$f" >/dev/null 2>&1 '
+                '&& git checkout -- "$f" || rm -f "$f"; done'
+            )
         test_output, _ = await self._grading_sandbox.run(
-            f"cd / && PYTHONPATH=/testbed bash -c {quote(hardened)}",
+            "cd /testbed && bash run_tests.sh",
             timeout=self.validated.test_timeout,
         )
 
@@ -202,22 +237,15 @@ class R2EGym(Environment):
         # analysis.
         no_tests_collected = not parse_res and bool(expected)
 
-        # Compare
-        if len(parse_res) != len(expected):
-            reward = 0.0
-        else:
-            # If ANY mismatch, reward = 0.0, else = 1.0
-            match = True
-            for k in parse_res.keys():
-                if not k:
-                    continue
-                if k not in expected:
-                    match = False
-                    break
-                if parse_res[k] != expected[k]:
-                    match = False
-                    break
-            reward = 1.0 if match else 0.0
+        # Score over the tests the expected mapping names. Every one of them has
+        # to be present and agree: a patch that suppresses a test leaves its key
+        # missing and still fails. A test the mapping does not name has no status
+        # to compare against, so it cannot be graded either way -- dev-mode-only
+        # tests, for instance, whose selection depends on how pytest is invoked.
+        missing = [k for k in expected if k and k not in parse_res]
+        mismatched = [k for k in expected if k and k in parse_res and parse_res[k] != expected[k]]
+        ungraded_tests = [k for k in parse_res if k and k not in expected]
+        reward = 0.0 if missing or mismatched else 1.0
 
         note = (
             "\n\nNOTE: the withheld suite collected 0 tests. Scored 0.0, but "
@@ -225,12 +253,20 @@ class R2EGym(Environment):
             if no_tests_collected
             else ""
         )
+        if ungraded_tests:
+            note += (
+                "\n\nNOTE: not scored, absent from the expected results: "
+                + ", ".join(ungraded_tests)
+            )
         return ToolOutput(
             metadata={
                 "parse_res": parse_res,
                 "expected": expected,
                 "patch": patch,
                 "no_tests_collected": no_tests_collected,
+                "missing_tests": missing,
+                "mismatched_tests": mismatched,
+                "ungraded_tests": ungraded_tests,
             },
             blocks=[TextBlock(text=f"Test Results:\n{json.dumps(parse_res, indent=2)}\n\nExpected:\n{json.dumps(expected, indent=2)}\n\nReward: {reward}{note}")],
             reward=reward,
