@@ -17,6 +17,27 @@ from utils import decode_patch_bytes, decolor_dict_keys, parse_log
 FULL_DATASET = cast(Dataset, load_dataset("R2E-Gym/R2E-Gym-V1", split="train"))
 SUBSET_DATASET = cast(Dataset, load_dataset("R2E-Gym/R2E-Gym-Subset", split="train"))
 
+
+class SandboxUnavailableError(RuntimeError):
+    """The task's sandbox is gone, so no command could be executed in it."""
+
+
+_DEAD_SANDBOX_MARKERS = ("no such container", "is not running")
+
+
+def _dead_sandbox_error(output: str) -> str | None:
+    """Return the daemon's message if `output` is *only* a container-liveness error.
+
+    Requiring it to be the whole output keeps a command that merely prints the
+    string from being mistaken for a dead sandbox.
+    """
+    text = output.strip()
+    if "\n" in text or not text.startswith("Error response from daemon:"):
+        return None
+    lowered = text.lower()
+    return text if any(marker in lowered for marker in _DEAD_SANDBOX_MARKERS) else None
+
+
 class BashParams(BaseModel, extra="forbid"):
     command: str
 
@@ -97,6 +118,13 @@ class R2EGym(Environment):
             f"source /root/.venv/bin/activate && {params.command.strip()}",
             timeout=self.validated.bash_timeout,
         )
+        # A dead sandbox means we could not run the command, not that it failed;
+        # raise so the platform can retry or mark the trial ungraded.
+        dead = _dead_sandbox_error(output)
+        if dead is not None:
+            raise SandboxUnavailableError(
+                f"sandbox for task {self.validated.id} is unavailable: {dead}"
+            )
         return ToolOutput(
             metadata={"output": output, "exit_code": code},
             blocks=[TextBlock(text=f"{output}\n\n(exit {code})")],
