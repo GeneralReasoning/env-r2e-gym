@@ -7,12 +7,37 @@ import pandas as pd
 import pytest
 from openreward.environments import JSONObject, ToolOutput
 
-from r2e_gym import BashParams, R2EGym
+from r2e_gym import BashParams, R2EGym, _dead_sandbox_error
 
 OPENREWARD_API_KEY = os.getenv("OPENREWARD_API_KEY", "")
 
 tasks = R2EGym.list_tasks("all")
 EXAMPLE_R2E_TASK = tasks[0]
+
+# Needs no sandbox and no API key: the detector is pure text handling, and it is
+# the only thing standing between a vanished container and a rollout that burns
+# its whole turn budget on identical errors.
+@pytest.mark.parametrize("output", [
+    "Error response from daemon: No such container: orshim-fb61de1a67ca",
+    "  Error response from daemon: No such container: orshim-fb61de1a67ca\n",
+    "Error response from daemon: Container orshim-fb61de1a67ca is not running",
+])
+def test_dead_sandbox_error_detected(output: str):
+    assert _dead_sandbox_error(output) is not None
+
+@pytest.mark.parametrize("output", [
+    "",
+    "bash: line 1: nosuchcmd: command not found",
+    # A real command whose *output* quotes the daemon error -- reading a log,
+    # grepping one -- must not be mistaken for a dead sandbox.
+    "Error response from daemon: No such container: orshim-fb61de1a67ca\nnext line",
+    "$ cat err.log\nError response from daemon: No such container: abc",
+    # A daemon error that says nothing about container liveness is somebody
+    # else's problem; only a gone container makes the sandbox unusable.
+    "Error response from daemon: conflict: unable to remove image",
+])
+def test_live_sandbox_output_not_flagged(output: str):
+    assert _dead_sandbox_error(output) is None
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(not OPENREWARD_API_KEY, reason="OPENREWARD_API_KEY is not set")
