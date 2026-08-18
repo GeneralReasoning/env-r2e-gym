@@ -22,24 +22,14 @@ class SandboxUnavailableError(RuntimeError):
     """The task's sandbox is gone, so no command could be executed in it."""
 
 
-# The docker daemon reports a vanished container through `sandbox.run()`'s
-# ordinary (output, exit_code) return -- there is no exception and the code is a
-# plain 1, so it is indistinguishable from a command that merely failed. Once the
-# container is gone every later call returns the same text forever, and an agent
-# has no signal telling it to stop: in the 20260817 trace of this env, rollout
-# orange3-7b57bbdd74a1 spent all 400 of its turns and 3.57M input tokens on 400
-# byte-identical "No such container" replies before being scored 0.0.
 _DEAD_SANDBOX_MARKERS = ("no such container", "is not running")
 
 
 def _dead_sandbox_error(output: str) -> str | None:
     """Return the daemon's message if `output` is *only* a container-liveness error.
 
-    A dead container can only be told apart from a genuinely failing command by
-    this text, so the match is deliberately narrow: the daemon error has to be
-    the whole output. Nothing else can have printed, because the exec never ran
-    -- which keeps a command that merely *contains* the string (`cat` of a log,
-    `grep` over one) from being mistaken for a dead sandbox.
+    Requiring it to be the whole output keeps a command that merely prints the
+    string from being mistaken for a dead sandbox.
     """
     text = output.strip()
     if "\n" in text or not text.startswith("Error response from daemon:"):
@@ -128,13 +118,8 @@ class R2EGym(Environment):
             f"source /root/.venv/bin/activate && {params.command.strip()}",
             timeout=self.validated.bash_timeout,
         )
-        # Same reasoning as answer()'s deliberately-uncaught grading failures: a
-        # dead sandbox means we could not run the command, not that the command
-        # failed. Raising lets the platform retry the rollout and, if the sandbox
-        # stays gone, mark the trial ungraded -- rather than handing the agent an
-        # error it cannot act on and banking the result as a real 0.0. No retry
-        # here on purpose: a container the daemon has no record of is terminal,
-        # not transient, so re-execing against it can only fail the same way.
+        # A dead sandbox means we could not run the command, not that it failed;
+        # raise so the platform can retry or mark the trial ungraded.
         dead = _dead_sandbox_error(output)
         if dead is not None:
             raise SandboxUnavailableError(
