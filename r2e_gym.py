@@ -237,22 +237,15 @@ class R2EGym(Environment):
         # analysis.
         no_tests_collected = not parse_res and bool(expected)
 
-        # Compare
-        if len(parse_res) != len(expected):
-            reward = 0.0
-        else:
-            # If ANY mismatch, reward = 0.0, else = 1.0
-            match = True
-            for k in parse_res.keys():
-                if not k:
-                    continue
-                if k not in expected:
-                    match = False
-                    break
-                if parse_res[k] != expected[k]:
-                    match = False
-                    break
-            reward = 1.0 if match else 0.0
+        # Score over the tests the expected mapping names. Every one of them has
+        # to be present and agree: a patch that suppresses a test leaves its key
+        # missing and still fails. A test the mapping does not name has no status
+        # to compare against, so it cannot be graded either way -- dev-mode-only
+        # tests, for instance, whose selection depends on how pytest is invoked.
+        missing = [k for k in expected if k and k not in parse_res]
+        mismatched = [k for k in expected if k and k in parse_res and parse_res[k] != expected[k]]
+        ungraded_tests = [k for k in parse_res if k and k not in expected]
+        reward = 0.0 if missing or mismatched else 1.0
 
         note = (
             "\n\nNOTE: the withheld suite collected 0 tests. Scored 0.0, but "
@@ -260,12 +253,20 @@ class R2EGym(Environment):
             if no_tests_collected
             else ""
         )
+        if ungraded_tests:
+            note += (
+                "\n\nNOTE: not scored, absent from the expected results: "
+                + ", ".join(ungraded_tests)
+            )
         return ToolOutput(
             metadata={
                 "parse_res": parse_res,
                 "expected": expected,
                 "patch": patch,
                 "no_tests_collected": no_tests_collected,
+                "missing_tests": missing,
+                "mismatched_tests": mismatched,
+                "ungraded_tests": ungraded_tests,
             },
             blocks=[TextBlock(text=f"Test Results:\n{json.dumps(parse_res, indent=2)}\n\nExpected:\n{json.dumps(expected, indent=2)}\n\nReward: {reward}{note}")],
             reward=reward,
