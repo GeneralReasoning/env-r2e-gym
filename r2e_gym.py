@@ -1,6 +1,5 @@
 import json
 import os
-import re
 import tempfile
 from pathlib import Path
 from shlex import quote
@@ -23,6 +22,30 @@ class SandboxUnavailableError(RuntimeError):
 
 
 _DEAD_SANDBOX_MARKERS = ("no such container", "is not running")
+
+_PYTEST_CONFIG_FILES = (
+    "pytest.ini",
+    "setup.cfg",
+    "tox.ini",
+    "pyproject.toml",
+    "conftest.py",
+)
+
+
+def _patched_config_files(patch: str) -> list[str]:
+    """Root-level pytest config files the submitted diff touches, if any.
+
+    Anything untracked at setup() is in .git/info/exclude, so a config path can
+    only reach here by being tracked or newly added by the diff itself.
+    """
+    names = set()
+    for line in patch.splitlines():
+        for prefix in ("--- a/", "+++ b/"):
+            if line.startswith(prefix):
+                path = line[len(prefix):].split("\t")[0].strip()
+                if path in _PYTEST_CONFIG_FILES:
+                    names.add(path)
+    return sorted(names)
 
 
 def _dead_sandbox_error(output: str) -> str | None:
@@ -170,11 +193,23 @@ class R2EGym(Environment):
                 finished=True,
             )
 
-        script = await self._grading_sandbox.check_run("cat /testbed/run_tests.sh")
-        hardened = re.sub(r"(?<![\w/.])\.venv/", "/testbed/.venv/", script.strip())
-        hardened = re.sub(r"(?<![\w/])r2e_tests(?![\w/])", "/r2e_tests", hardened)
+        # run_tests.sh must run from the repo root with the withheld tests
+        # reachable at the relative path it names, or pytest resolves a
+        # different rootdir and silently drops the repo's own config.
+        await self._grading_sandbox.check_run(
+            "rm -rf /testbed/r2e_tests && ln -s /r2e_tests /testbed/r2e_tests"
+        )
+        # Grade under the config the expected output was recorded with: a diff
+        # that edits it would rewrite the withheld suite's own selection.
+        config = _patched_config_files(patch)
+        if config:
+            await self._grading_sandbox.check_run(
+                "cd /testbed && for f in " + " ".join(quote(c) for c in config) + "; do "
+                'git ls-files --error-unmatch "$f" >/dev/null 2>&1 '
+                '&& git checkout -- "$f" || rm -f "$f"; done'
+            )
         test_output, _ = await self._grading_sandbox.run(
-            f"cd / && PYTHONPATH=/testbed bash -c {quote(hardened)}",
+            "cd /testbed && bash run_tests.sh",
             timeout=self.validated.test_timeout,
         )
 
