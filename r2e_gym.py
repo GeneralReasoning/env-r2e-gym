@@ -1,6 +1,7 @@
 import json
 import os
-import traceback
+import re
+import tempfile
 from pathlib import Path
 from shlex import quote
 from typing import Any, Iterable, List, cast
@@ -20,6 +21,13 @@ class BashParams(BaseModel, extra="forbid"):
     command: str
 
 class ValidatedSpec(BaseModel, extra="forbid"):
+    # Stable per-task identifier. Harnesses key their trial logs off
+    # id/index/scenario_id/task_id and fall back to a timestamp when none is
+    # present, which made every trial log indistinguishable ("trial_unknown_*")
+    # and per-task reward attribution impossible. Note this model is
+    # extra="forbid", so the field has to exist here for list_tasks() to be
+    # able to emit it.
+    id: str
     repo_name: str
     docker_image: str
     commit_hash: str
@@ -44,9 +52,8 @@ class R2EGym(Environment):
         ) # changed to Naman
         self.sandbox = self.or_client.sandbox(self.compute_settings)
 
-        self._hidden_dir = Path("/var/lib/.r2e_gym")
-        self._hidden_tests_tar = self._hidden_dir / f".r2e_tests.{self.validated.commit_hash}.tar"
-        self._hidden_run_tests = self._hidden_dir / f".run_tests.{self.validated.commit_hash}.sh"
+        self._grading_sandbox = self.or_client.sandbox(self.compute_settings)
+        self._baseline_tree: str | None = None
 
     async def setup(self) -> None:
         await self.sandbox.start()
@@ -58,31 +65,25 @@ class R2EGym(Environment):
         await self.sandbox.check_run("find /r2e_tests -name '*.pyc' -delete")
         await self.sandbox.check_run("find /r2e_tests -name '__pycache__' -delete")
 
-        # symlinks, so we can run tests from /root
         await self.sandbox.check_run("ln -s /testbed/.venv/bin/python /root/.local/bin/python")
         await self.sandbox.check_run("ln -s /testbed/.venv/bin/python /root/.local/bin/python3")
         await self.sandbox.check_run("ln -s /testbed/.venv/ /root/.venv")
-        await self.sandbox.check_run("ln -s /root/r2e_tests /testbed/r2e_tests")
 
-        hidden_dir_q = quote(str(self._hidden_dir))
-        hidden_tests_tar_q = quote(str(self._hidden_tests_tar))
-        hidden_run_tests_q = quote(str(self._hidden_run_tests))
         await self.sandbox.check_run(
-            " && ".join(
-                [
-                    f"mkdir -p {hidden_dir_q}",
-                    f"chmod 700 {hidden_dir_q}",
-                    f"tar -cf {hidden_tests_tar_q} -C / r2e_tests",
-                    f"chmod 600 {hidden_tests_tar_q}",
-                    f"mv /testbed/run_tests.sh {hidden_run_tests_q}",
-                    f"chmod 700 {hidden_run_tests_q}",
-                    "rm -rf /r2e_tests",
-                ]
-            )
+            "cd /testbed && git status --porcelain | sed -n 's/^?? //p' >> .git/info/exclude"
         )
+        self._baseline_tree = (
+            await self.sandbox.check_run("cd /testbed && git add -A >/dev/null && git write-tree")
+        ).strip()
+
+        await self.sandbox.check_run("rm -rf /r2e_tests /testbed/run_tests.sh")
 
     async def teardown(self) -> None:
         await self.sandbox.stop()
+        try:
+            await self._grading_sandbox.stop()
+        except Exception:
+            pass
 
     async def get_prompt(self) -> List[TextBlock]:
         return [TextBlock(text=self.validated.problem_statement)]
@@ -90,9 +91,12 @@ class R2EGym(Environment):
     @tool
     async def bash(self, params: BashParams) -> ToolOutput:
         """
-        Execute a bash command in the in the /root/.venv environment
+        Execute a bash command as an unprivileged user in the /testbed/.venv environment
         """
-        output, code = await self.sandbox.run(f"source /root/.venv/bin/activate && {params.command.strip()}", timeout=self.validated.bash_timeout)
+        output, code = await self.sandbox.run(
+            f"source /root/.venv/bin/activate && {params.command.strip()}",
+            timeout=self.validated.bash_timeout,
+        )
         return ToolOutput(
             metadata={"output": output, "exit_code": code},
             blocks=[TextBlock(text=f"{output}\n\n(exit {code})")],
@@ -107,59 +111,103 @@ class R2EGym(Environment):
         This can only be called once, after all steps have been taken; only call this tool after you have finished all your steps and solved the coding issue.
         """
         expected_json = json.loads(self.validated.expected_output_json)
-        try:
-            # extract patch for logging
-            if self.validated.download_model_patch:
-                await self.sandbox.check_run(f"git add -A && git diff --cached {self.validated.commit_hash} > /testbed/model.patch")
-                patch_bytes = await self.sandbox.download("/testbed/model.patch")
-                patch = decode_patch_bytes(patch_bytes)
-            else:
-                patch = ""
+        # Grading failures are deliberately NOT caught. Everything below is a
+        # network round-trip to the sandbox (check_run / download / run), and a
+        # failed round-trip means we could not grade -- not that the patch was
+        # wrong. Letting it propagate lets the platform retry and, if it keeps
+        # failing, mark the trial ungraded. This used to be wrapped in a bare
+        # `except Exception` that returned reward=0.0, finished=True, so a
+        # transient sandbox error was banked as a genuine patch failure.
+        baseline = quote(cast(str, self._baseline_tree))
+        await self.sandbox.check_run(
+            f"cd /testbed && git add -A >/dev/null && git diff --cached --binary {baseline} > /tmp/model.patch"
+        )
+        patch_bytes = await self.sandbox.download("/tmp/model.patch")
+        patch = decode_patch_bytes(patch_bytes)
 
-            # Restore withheld tests for grading only
-            hidden_tests_tar_q = quote(str(self._hidden_tests_tar))
-            hidden_run_tests_q = quote(str(self._hidden_run_tests))
-            await self.sandbox.check_run(f"cp {hidden_run_tests_q} /root/run_tests.sh && chmod 700 /root/run_tests.sh")
-            await self.sandbox.check_run(f"tar -xf {hidden_tests_tar_q} -C /root")
+        await self._grading_sandbox.start()
+        await self._grading_sandbox.check_run("git config --global --add safe.directory /testbed")
 
-            test_output, _ = await self.sandbox.run("bash /root/run_tests.sh", timeout=self.validated.test_timeout)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_file = Path(temp_dir) / "model.patch"
+            temp_file.write_bytes(patch_bytes)
+            await self._grading_sandbox.upload(temp_file, "/tmp/model.patch")
 
-            parse_res = parse_log(test_output)
-            parse_res = decolor_dict_keys(parse_res)
-            parse_res = {k.split(" - ")[0]: parse_res[k] for k in sorted(parse_res.keys())}
-
-            expected = decolor_dict_keys(expected_json)
-            expected = {k.split(" - ")[0]: expected[k] for k in sorted(expected.keys())}
-
-            # Compare
-            if len(parse_res) != len(expected):
-                reward = 0.0
-            else:
-                # If ANY mismatch, reward = 0.0, else = 1.0
-                match = True
-                for k in parse_res.keys():
-                    if not k:
-                        continue
-                    if k not in expected:
-                        match = False
-                        break
-                    if parse_res[k] != expected[k]:
-                        match = False
-                        break
-                reward = 1.0 if match else 0.0
+        applied = await self._grading_sandbox.run("cd /testbed && git apply /tmp/model.patch")
+        if applied.return_code != 0:
             return ToolOutput(
-                metadata={"parse_res": parse_res, "expected": expected, "patch": patch},
-                blocks=[TextBlock(text=f"Test Results:\n{json.dumps(parse_res, indent=2)}\n\nExpected:\n{json.dumps(expected, indent=2)}\n\nReward: {reward}")],
-                reward=reward,
-                finished=True,
-            )
-        except Exception:
-            return ToolOutput(
-                metadata={"error": traceback.format_exc()},
-                blocks=[TextBlock(text=f"Error during evaluation:\n{traceback.format_exc()}")],
+                metadata={"error": "patch_did_not_apply", "detail": applied.output, "patch": patch},
+                blocks=[TextBlock(text=f"Submitted changes could not be applied for grading:\n{applied.output}\n\nReward: 0.0")],
                 reward=0.0,
                 finished=True,
             )
+
+        script = await self._grading_sandbox.check_run("cat /testbed/run_tests.sh")
+        hardened = re.sub(r"(?<![\w/.])\.venv/", "/testbed/.venv/", script.strip())
+        hardened = re.sub(r"(?<![\w/])r2e_tests(?![\w/])", "/r2e_tests", hardened)
+        test_output, _ = await self._grading_sandbox.run(
+            f"cd / && PYTHONPATH=/testbed bash -c {quote(hardened)}",
+            timeout=self.validated.test_timeout,
+        )
+
+        # No output at all means the suite never ran (sandbox died, script
+        # missing, timeout before first write) rather than "every test failed".
+        # Raise so the platform can retry instead of banking a 0.0.
+        if not test_output or not test_output.strip():
+            raise RuntimeError(
+                "Withheld test suite produced no output; cannot grade this "
+                "rollout. Treating as ungraded rather than scoring it 0.0."
+            )
+
+        parse_res = parse_log(test_output)
+        parse_res = decolor_dict_keys(parse_res)
+        parse_res = {k.split(" - ")[0]: parse_res[k] for k in sorted(parse_res.keys())}
+
+        expected = decolor_dict_keys(expected_json)
+        expected = {k.split(" - ")[0]: expected[k] for k in sorted(expected.keys())}
+
+        # A run that collected zero tests is not the same thing as a run where
+        # every test failed, but both used to land on an indistinguishable 0.0.
+        # We still score it 0.0 -- a patch that breaks collection outright is a
+        # real failure, and making it ungraded would let an agent dodge the
+        # penalty by breaking the suite -- but flag it so it is separable in
+        # analysis.
+        no_tests_collected = not parse_res and bool(expected)
+
+        # Compare
+        if len(parse_res) != len(expected):
+            reward = 0.0
+        else:
+            # If ANY mismatch, reward = 0.0, else = 1.0
+            match = True
+            for k in parse_res.keys():
+                if not k:
+                    continue
+                if k not in expected:
+                    match = False
+                    break
+                if parse_res[k] != expected[k]:
+                    match = False
+                    break
+            reward = 1.0 if match else 0.0
+
+        note = (
+            "\n\nNOTE: the withheld suite collected 0 tests. Scored 0.0, but "
+            "this is a collection failure rather than a per-test comparison."
+            if no_tests_collected
+            else ""
+        )
+        return ToolOutput(
+            metadata={
+                "parse_res": parse_res,
+                "expected": expected,
+                "patch": patch,
+                "no_tests_collected": no_tests_collected,
+            },
+            blocks=[TextBlock(text=f"Test Results:\n{json.dumps(parse_res, indent=2)}\n\nExpected:\n{json.dumps(expected, indent=2)}\n\nReward: {reward}{note}")],
+            reward=reward,
+            finished=True,
+        )
 
     @classmethod
     def list_tasks(cls, split: str) -> list[JSONObject]:
@@ -169,6 +217,7 @@ class R2EGym(Environment):
             df = SUBSET_DATASET
         validated_spec = [
             ValidatedSpec(
+                id=f"{r['repo_name']}-{r['commit_hash'][:12]}",
                 repo_name=r["repo_name"],
                 docker_image=r["docker_image"],
                 commit_hash=r["commit_hash"],
