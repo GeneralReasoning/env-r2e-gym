@@ -37,6 +37,29 @@ def test_live_sandbox_output_not_flagged(output: str):
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(not OPENREWARD_API_KEY, reason="OPENREWARD_API_KEY is not set")
+async def test_gold_commit_unreachable_after_setup():
+    """setup() raises on this itself; the test pins the property so a rewrite
+    of the strip cannot quietly weaken it."""
+    env = R2EGym(task_spec=EXAMPLE_R2E_TASK, secrets={"OPENREWARD_API_KEY": OPENREWARD_API_KEY})
+    try:
+        await env.setup()
+        commit = env.validated.commit_hash
+        probe = await env.bash(BashParams(
+            command=f"cd /testbed && git cat-file -e {commit}^{{commit}} "
+                    "&& echo READABLE || echo GONE"
+        ))
+        assert "GONE" in cast(str, probe.metadata["output"])
+        # One parentless commit and nothing else: no second route to the fix
+        # through a ref, a reflog, or an unpruned object.
+        history = await env.bash(BashParams(
+            command="cd /testbed && git rev-list --all | wc -l"
+        ))
+        assert cast(str, history.metadata["output"]).strip() == "1"
+    finally:
+        await env.teardown()
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not OPENREWARD_API_KEY, reason="OPENREWARD_API_KEY is not set")
 async def test_r2e_bash():
     env = R2EGym(task_spec=EXAMPLE_R2E_TASK, secrets={"OPENREWARD_API_KEY": OPENREWARD_API_KEY})
     try:
