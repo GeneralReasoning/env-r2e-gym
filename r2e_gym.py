@@ -208,10 +208,23 @@ class R2EGym(Environment):
                 'git ls-files --error-unmatch "$f" >/dev/null 2>&1 '
                 '&& git checkout -- "$f" || rm -f "$f"; done'
             )
-        test_output, _ = await self._grading_sandbox.run(
+        graded = await self._grading_sandbox.run(
             "cd /testbed && bash run_tests.sh",
             timeout=self.validated.test_timeout,
+            max_bytes=None,
         )
+        test_output = graded.output
+
+        if graded.timed_out:
+            raise RuntimeError(
+                f"Withheld test suite for task {self.validated.id} timed out after "
+                f"{self.validated.test_timeout}s; cannot grade this rollout."
+            )
+        if graded.truncated:
+            raise RuntimeError(
+                f"Withheld test suite output for task {self.validated.id} was truncated; "
+                "the reported results are incomplete and cannot be graded."
+            )
 
         # No output at all means the suite never ran (sandbox died, script
         # missing, timeout before first write) rather than "every test failed".
@@ -264,6 +277,7 @@ class R2EGym(Environment):
                 "expected": expected,
                 "patch": patch,
                 "no_tests_collected": no_tests_collected,
+                "grading_return_code": graded.return_code,
                 "missing_tests": missing,
                 "mismatched_tests": mismatched,
                 "ungraded_tests": ungraded_tests,
