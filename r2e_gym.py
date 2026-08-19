@@ -48,6 +48,29 @@ def _patched_config_files(patch: str) -> list[str]:
     return sorted(names)
 
 
+# The task id IS the upstream fix commit and the image leaves it reachable, so
+# `git show <task id>` prints the gold patch and the withheld test.
+_STRIP_HISTORY = r"""
+set -eu
+cd /testbed
+# Keeps pre-existing untracked files out of the index, and so out of the patch.
+git status --porcelain | sed -n 's/^?? //p' >> .git/info/exclude
+git add -A >/dev/null
+COMMIT=$(git -c user.email=env@r2e-gym.invalid -c user.name=R2E-Gym \
+         commit-tree "$(git write-tree)" -m "Task base state")
+git symbolic-ref HEAD refs/heads/__r2e_base
+git update-ref refs/heads/__r2e_base "$COMMIT"
+git for-each-ref --format='%(refname)' \
+  | grep -vx refs/heads/__r2e_base \
+  | while read -r ref; do git update-ref -d "$ref"; done
+for remote in $(git remote); do git remote remove "$remote"; done
+rm -rf .git/logs
+git reflog expire --expire=now --expire-unreachable=now --all
+git gc --prune=now --quiet
+git prune --expire=now
+"""
+
+
 def _dead_sandbox_error(output: str) -> str | None:
     """Return the daemon's message if `output` is *only* a container-liveness error.
 
@@ -113,9 +136,21 @@ class R2EGym(Environment):
         await self.sandbox.check_run("ln -s /testbed/.venv/bin/python /root/.local/bin/python3")
         await self.sandbox.check_run("ln -s /testbed/.venv/ /root/.venv")
 
-        await self.sandbox.check_run(
-            "cd /testbed && git status --porcelain | sed -n 's/^?? //p' >> .git/info/exclude"
+        # Subsumes the .git/info/exclude line that used to be here.
+        await self.sandbox.check_run(_STRIP_HISTORY)
+
+        # A strip that quietly no-ops looks exactly like one that worked, until
+        # it shows up as an inflated pass rate -- so fail setup instead.
+        leak = await self.sandbox.run(
+            f"cd /testbed && git cat-file -e {quote(self.validated.commit_hash)}^{{commit}}"
         )
+        if leak.return_code == 0:
+            raise RuntimeError(
+                f"gold commit {self.validated.commit_hash} is still readable in "
+                f"/testbed after stripping history for task {self.validated.id}; "
+                "refusing to run a task whose answer is in the box."
+            )
+
         self._baseline_tree = (
             await self.sandbox.check_run("cd /testbed && git add -A >/dev/null && git write-tree")
         ).strip()
