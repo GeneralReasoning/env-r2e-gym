@@ -112,10 +112,14 @@ class R2EGym(Environment):
         self.validated = ValidatedSpec.model_validate(task_spec)
 
         self.or_client = AsyncOpenReward(api_key=secrets.get("api_key"))
+        # Every task is built from a public upstream fix commit, so the answer
+        # lives at a stable URL for as long as the repo does -- see the leak note
+        # on _STRIP_HISTORY, which closes only the copy inside /testbed.
         self.compute_settings = SandboxSettings(
             environment="Naman/R2E-Gym",
             image=self.validated.docker_image,
-            machine_size="4:8"
+            machine_size="4:8",
+            block_network=True,
         ) # changed to Naman
         self.sandbox = self.or_client.sandbox(self.compute_settings)
 
