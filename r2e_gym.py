@@ -17,6 +17,11 @@ FULL_DATASET = cast(Dataset, load_dataset("R2E-Gym/R2E-Gym-V1", split="train"))
 SUBSET_DATASET = cast(Dataset, load_dataset("R2E-Gym/R2E-Gym-Subset", split="train"))
 
 
+# Reward for a submission made after the task has already been graded. Negative
+# so repeat submissions are actively discouraged, not merely left unscored.
+REPEAT_SUBMISSION_PENALTY = -0.1
+
+
 class SandboxUnavailableError(RuntimeError):
     """The task's sandbox is gone, so no command could be executed in it."""
 
@@ -111,6 +116,12 @@ class R2EGym(Environment):
         super().__init__(task_spec)
         self.validated = ValidatedSpec.model_validate(task_spec)
 
+        # Scored submissions this session. answer() runs the withheld tests and
+        # reports the outcome, and the agent holds the editor tools, so an
+        # uncapped answer() is a free CI loop against the held-out suite. The
+        # docstring already said this can only be called once; this enforces it.
+        self.submitted = 0
+
         self.or_client = AsyncOpenReward(api_key=secrets.get("api_key"))
         # Every task is built from a public upstream fix commit, so the answer
         # lives at a stable URL for as long as the repo does -- see the leak note
@@ -200,6 +211,16 @@ class R2EGym(Environment):
         Computes the final score. Executes the relevant unit and system tests, including withheld tests.
         This can only be called once, after all steps have been taken; only call this tool after you have finished all your steps and solved the coding issue.
         """
+        if self.submitted > 0:
+            return ToolOutput(
+                blocks=[TextBlock(text="A solution has already been submitted for this task. "
+                                       "This episode is over: it is not re-scored, and repeat "
+                                       "submissions are penalised (reward -0.1).")],
+                metadata={"already_submitted": True, "submission_count": self.submitted},
+                reward=REPEAT_SUBMISSION_PENALTY,
+                finished=True,
+            )
+
         expected_json = json.loads(self.validated.expected_output_json)
         # Grading failures are deliberately NOT caught. Everything below is a
         # network round-trip to the sandbox (check_run / download / run), and a
@@ -310,6 +331,10 @@ class R2EGym(Environment):
                 "\n\nNOTE: not scored, absent from the expected results: "
                 + ", ".join(ungraded_tests)
             )
+        # A patch that would not apply returns above without running the tests, so
+        # it does not consume the attempt.
+        self.submitted += 1
+
         return ToolOutput(
             metadata={
                 "parse_res": parse_res,
