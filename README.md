@@ -53,7 +53,7 @@ A `gold_patches.csv` file (42MB) is included in the repository for validation te
 | Tool | Parameters | Description |
 |------|-----------|-------------|
 | `bash` | `command: str` | Execute a bash command in the sandbox's `/root/.venv` environment. Commands have a 600-second timeout by default. Returns stdout/stderr and exit code. |
-| `answer` | *(none)* | Restores withheld tests, runs them via pytest, and computes the final score by comparing test results against expected output. Ends the episode. Can only be called once. |
+| `answer` | *(none)* | Restores withheld tests, runs them via pytest, and computes the final score by comparing test results against expected output. Ends the episode. Can only be called once; a submission whose changes cannot be applied (e.g. an empty diff) is not graded, does not end the episode, and can be resubmitted. |
 
 ## Time Horizon
 
