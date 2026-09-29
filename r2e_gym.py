@@ -210,6 +210,7 @@ class R2EGym(Environment):
         """
         Computes the final score. Executes the relevant unit and system tests, including withheld tests.
         This can only be called once, after all steps have been taken; only call this tool after you have finished all your steps and solved the coding issue.
+        If your changes cannot be applied for grading, nothing is graded and you can call it again.
         """
         if self.submitted > 0:
             return ToolOutput(
@@ -246,11 +247,18 @@ class R2EGym(Environment):
 
         applied = await self._grading_sandbox.run("cd /testbed && git apply /tmp/model.patch")
         if applied.return_code != 0:
+            # Nothing was graded, so the episode stays open for a resubmission.
+            # Stop the grading sandbox so the next answer() starts a fresh one
+            # instead of orphaning this one.
+            await self._grading_sandbox.stop()
             return ToolOutput(
                 metadata={"error": "patch_did_not_apply", "detail": applied.output, "patch": patch},
-                blocks=[TextBlock(text=f"Submitted changes could not be applied for grading:\n{applied.output}\n\nReward: 0.0")],
+                blocks=[TextBlock(text=f"Submitted changes could not be applied for grading:\n{applied.output}\n\n"
+                                       "Nothing was graded and this does not count as your submission. "
+                                       "Make sure /testbed contains your changes (an unchanged repository "
+                                       "produces an empty diff), then call answer again.")],
                 reward=0.0,
-                finished=True,
+                finished=False,
             )
 
         # run_tests.sh must run from the repo root with the withheld tests
@@ -328,25 +336,31 @@ class R2EGym(Environment):
         )
         if ungraded_tests:
             note += (
-                "\n\nNOTE: not scored, absent from the expected results: "
-                + ", ".join(ungraded_tests)
+                f"\n\nNOTE: {len(ungraded_tests)} test(s) not scored, absent from "
+                "the expected results."
             )
-        # A patch that would not apply returns above without running the tests, so
-        # it does not consume the attempt.
+        # A patch that would not apply returns above without running the tests,
+        # with finished=False, so it does not consume the attempt.
         self.submitted += 1
 
+        # The withheld tests' names and expected statuses are the task's
+        # reference, and metadata reaches the model like the text does, so
+        # both report aggregate counts only.
+        graded_count = len([k for k in expected if k])
+        matched_count = graded_count - len(missing) - len(mismatched)
         return ToolOutput(
             metadata={
-                "parse_res": parse_res,
-                "expected": expected,
                 "patch": patch,
                 "no_tests_collected": no_tests_collected,
                 "grading_return_code": graded.return_code,
-                "missing_tests": missing,
-                "mismatched_tests": mismatched,
-                "ungraded_tests": ungraded_tests,
+                "graded_tests": graded_count,
+                "matched_tests": matched_count,
+                "missing_tests": len(missing),
+                "mismatched_tests": len(mismatched),
+                "ungraded_tests": len(ungraded_tests),
             },
-            blocks=[TextBlock(text=f"Test Results:\n{json.dumps(parse_res, indent=2)}\n\nExpected:\n{json.dumps(expected, indent=2)}\n\nReward: {reward}{note}")],
+            blocks=[TextBlock(text=f"Withheld tests matching the expected result: {matched_count}/{graded_count} "
+                                   f"({len(missing)} missing, {len(mismatched)} mismatched)\n\nReward: {reward}{note}")],
             reward=reward,
             finished=True,
         )
