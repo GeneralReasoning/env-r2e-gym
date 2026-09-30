@@ -46,6 +46,9 @@ class _FakeSandbox:
         self.starts = self.stops = 0
 
     async def start(self):
+        # Like the SDK handle, which keeps the deleted sandbox's sid after stop().
+        if self.stops:
+            raise RuntimeError("400, message='Session not found.'")
         self.starts += 1
 
     async def stop(self):
@@ -94,12 +97,11 @@ async def test_unappliable_patch_leaves_episode_open():
     assert first.ok
     assert first.output.reward == 0.0 and not first.output.finished
     assert first.output.metadata["error"] == "patch_did_not_apply"
-    assert grading.stops == 1
 
     second = (await env._call_tool("answer", {})).root
     assert second.ok
     assert second.output.reward == 1.0 and second.output.finished
-    assert grading.starts == 2
+    assert grading.starts == 1 and grading.stops == 0
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("log, reward", [
