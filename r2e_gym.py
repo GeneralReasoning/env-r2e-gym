@@ -135,6 +135,9 @@ class R2EGym(Environment):
         self.sandbox = self.or_client.sandbox(self.compute_settings)
 
         self._grading_sandbox = self.or_client.sandbox(self.compute_settings)
+        # Started on the first answer() and kept for any retry: the SDK handle
+        # cannot be restarted after stop(), since it keeps the deleted sandbox's sid.
+        self._grading_started = False
         self._baseline_tree: str | None = None
 
     async def setup(self) -> None:
@@ -237,8 +240,10 @@ class R2EGym(Environment):
         patch_bytes = await self.sandbox.download("/tmp/model.patch")
         patch = decode_patch_bytes(patch_bytes)
 
-        await self._grading_sandbox.start()
-        await self._grading_sandbox.check_run("git config --global --add safe.directory /testbed")
+        if not self._grading_started:
+            await self._grading_sandbox.start()
+            self._grading_started = True
+            await self._grading_sandbox.check_run("git config --global --add safe.directory /testbed")
 
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_file = Path(temp_dir) / "model.patch"
@@ -248,9 +253,8 @@ class R2EGym(Environment):
         applied = await self._grading_sandbox.run("cd /testbed && git apply /tmp/model.patch")
         if applied.return_code != 0:
             # Nothing was graded, so the episode stays open for a resubmission.
-            # Stop the grading sandbox so the next answer() starts a fresh one
-            # instead of orphaning this one.
-            await self._grading_sandbox.stop()
+            # git apply is all-or-nothing, so /testbed in the grading sandbox is
+            # still pristine and the retry reuses it.
             return ToolOutput(
                 metadata={"error": "patch_did_not_apply", "detail": applied.output, "patch": patch},
                 blocks=[TextBlock(text=f"Submitted changes could not be applied for grading:\n{applied.output}\n\n"
