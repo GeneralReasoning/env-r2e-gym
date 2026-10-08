@@ -26,7 +26,7 @@ Each task runs in an isolated Docker sandbox provisioned with 4 CPUs and 8GB of 
 
 There are two splits in this environment:
 
-- **all**: ~8,100 tasks sourced from the [R2E-Gym-V1](https://huggingface.co/datasets/R2E-Gym/R2E-Gym-V1) dataset. Each task corresponds to a real commit in an open-source repository, with a problem statement describing the issue and withheld tests for grading.
+- **all**: 6,909 tasks sourced from the [R2E-Gym-V1](https://huggingface.co/datasets/R2E-Gym/R2E-Gym-V1) dataset (its 8,101 rows minus the 1,192 whose problem statement is empty). Each task corresponds to a real commit in an open-source repository, with a problem statement describing the issue and withheld tests for grading.
 - **subset**: ~4,578 tasks sourced from the [R2E-Gym-Subset](https://huggingface.co/datasets/R2E-Gym/R2E-Gym-Subset) dataset. A curated subset of the full dataset.
 
 Both splits are typed as `train` splits. Each task specifies a `repo_name`, `docker_image`, `commit_hash`, `problem_statement`, and `expected_output_json` for grading.

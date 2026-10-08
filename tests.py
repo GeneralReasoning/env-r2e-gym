@@ -16,6 +16,18 @@ OPENREWARD_API_KEY = os.getenv("OPENREWARD_API_KEY", "")
 tasks = R2EGym.list_tasks("all")
 EXAMPLE_R2E_TASK = tasks[0]
 
+# get_prompt() serves the problem statement alone, so an empty one is a task
+# the agent cannot start.
+@pytest.mark.asyncio
+@pytest.mark.parametrize("split", ["all", "subset"])
+async def test_every_served_task_has_a_prompt(split: str):
+    served = R2EGym.list_tasks(split)
+    assert served
+    for task in served:
+        env = R2EGym(task_spec=task, secrets={"api_key": "unused"})
+        prompt = await env.get_prompt()
+        assert "".join(block.text for block in prompt).strip(), task["id"]
+
 # Needs no sandbox and no API key: the detector is pure text handling.
 @pytest.mark.parametrize("output", [
     "Error response from daemon: No such container: orshim-fb61de1a67ca",
