@@ -385,6 +385,10 @@ class R2EGym(Environment):
                 problem_statement=r["problem_statement"],
                 expected_output_json=r["expected_output_json"],
             ) for r in cast(Iterable[dict[str, Any]], df)
+            # The problem statement is the whole prompt; some upstream rows
+            # (all matplotlib and moto ones in R2E-Gym-V1) have an empty one,
+            # which leaves the agent with nothing to work on.
+            if r["problem_statement"].strip()
         ]
         return [v.model_dump() for v in validated_spec]
 
