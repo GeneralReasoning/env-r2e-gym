@@ -28,6 +28,18 @@ class SandboxUnavailableError(RuntimeError):
 
 _DEAD_SANDBOX_MARKERS = ("no such container", "is not running")
 
+# The agent's sandbox has no network, and a blocked connection waits out its
+# connect timeout. Pointing the proxy variables at a closed local port makes
+# every client that honours them (pip, curl, git, npm) fail at once instead.
+# Lower case only: some tools read the environment into a case-insensitive
+# config and reject a variable set in both cases. The grading sandbox keeps the
+# plain settings, so the tests run as before.
+NO_NETWORK_ENV = {
+    "http_proxy": "http://127.0.0.1:9",
+    "https_proxy": "http://127.0.0.1:9",
+    "no_proxy": "localhost,127.0.0.1,::1",
+}
+
 _PYTEST_CONFIG_FILES = (
     "pytest.ini",
     "setup.cfg",
@@ -132,7 +144,8 @@ class R2EGym(Environment):
             machine_size="4:8",
             block_network=True,
         ) # changed to Naman
-        self.sandbox = self.or_client.sandbox(self.compute_settings)
+        self.sandbox = self.or_client.sandbox(
+            self.compute_settings.model_copy(update={"env": NO_NETWORK_ENV}))
 
         self._grading_sandbox = self.or_client.sandbox(self.compute_settings)
         # Started on the first answer() and kept for any retry: the SDK handle
