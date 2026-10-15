@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 from openreward.environments import JSONObject, ToolOutput
 
-from r2e_gym import BashParams, R2EGym, _dead_sandbox_error
+from r2e_gym import NO_NETWORK_ENV, BashParams, R2EGym, _dead_sandbox_error
 
 OPENREWARD_API_KEY = os.getenv("OPENREWARD_API_KEY", "")
 
@@ -91,6 +91,14 @@ def _fake_env(expected: dict[str, str], grading: _FakeSandbox) -> R2EGym:
     env.sandbox, env._grading_sandbox = _FakeSandbox(), grading
     env._baseline_tree = "0" * 40
     return env
+
+def test_only_the_agent_sandbox_refuses_network_at_once():
+    env = R2EGym(task_spec=EXAMPLE_R2E_TASK, secrets={"api_key": "unused"})
+    agent, grading = env.sandbox.settings, env._grading_sandbox.settings
+    assert agent.block_network and grading.block_network
+    assert agent.env == NO_NETWORK_ENV
+    assert not grading.env
+    assert agent.model_copy(update={"env": None}) == grading
 
 EXPECTED = {"test_withheld_alpha": "PASSED", "test_withheld_beta": "FAILED"}
 MATCHING_LOG = (
